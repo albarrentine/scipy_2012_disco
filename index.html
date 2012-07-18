@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+
+<!--
+  Google HTML5 slide template
+
+  Authors: Luke Mahé (code)
+           Marcin Wichary (code and design)
+           
+           Dominic Mazzoni (browser compatibility)
+           Charles Chen (ChromeVox support)
+
+  URL: http://code.google.com/p/html5slides/
+-->
+
+<html>
+  <head>
+    <title>Scipy + MapReduce with Disco</title>
+
+    <meta charset='utf-8'>
+    <script
+      src='slides.js'></script>
+    <script
+      src='mathjax/MathJax.js?config=TeX-AMS-MML_HTMLorMML'></script>
+  </head>
+  
+  <style>
+    /* Your individual styles here, or just use inline styles if that’s
+       what you want. */
+    
+    
+  </style>
+
+  <body style='display: none'>
+
+    <section class='slides layout-regular template-default'>
+      
+      <!-- Your slides (<article>s) go here. Delete or comment out the
+           slides below. -->
+        
+        
+      <!--
+      <article class='biglogo'>
+      </article>
+      -->
+      
+      <article>
+        <h1>
+          SciPy + MapReduce
+          <br>
+          using Disco
+        </h1>
+        <p>
+          Al Barrentine
+          <br>
+          Data Scientist
+          <br>
+          July 18, 2012
+          <br>
+        </p>
+        <p>
+          <br>
+          @thatdatabaseguy
+        </p>
+      </article>
+      
+      <article>
+        <h3>Structure of this talk</h3>
+        <br>
+        <ul>
+          <li>Brief discussion of Disco</li>
+          <li>ditto for MapReduce</li>
+          <li>Worked example</li>
+        </ul>
+      </article>
+      
+      <article>
+        <h3>What is Disco?</h3><img style="float:right" src="images/disco_logo.png">
+        <ul>
+          <li>MapReduce without the Hadoop!</li>
+          <li>workers written in Python</li>
+          <li>backend written in Erlang (node coordination, job scheduling)</li>
+          <li>I use it to process the Twitter firehose (all of it)</li>
+          <li>found it to be faster than Hadoop Streaming (YMMV)</li>
+          <li>more flexible/programmable, all based on Python generators</li>
+          <li>worker wire protocol (use any language) + multiple ways to write workers in C</li>
+        </ul>
+      </article>
+
+      <article>
+        <h3>The Disco Distributed Filesystem</h3>
+        <ul><img style="float:right" src="images/ddfs_tags.png">
+          <li>Can technically use any distributed filesystem (and properly schedule for data locality)</li>
+          <li>DDFS (Disco's built-in DFS) is built on top of regular Linux filesystem</li>
+          <li>Tag-based!</li>
+          <li>Distribution of state information and common parameters</li>
+          <section>
+            <pre>ddfs.push('twitter:vocab', ['/al/vocab'], replicas=num_workers)</pre>
+          </section>
+        </ul>
+        
+      </article>
+      
+      <article>
+        <h1>discoproject.org</h1>
+      </article>
+      
+      <article>
+        <h2>a brief refresher on MapReduce</h2>
+      </article>
+      
+      <article>
+        <h3>
+          Something about pictures and 10<sup>3</sup>...
+        </h3>
+        <p>
+          <img class='centered' style='height: 350px;'  src='images/mapreduce.png'>
+        </p>
+        
+        <div class='source'>
+          Source: http://blog.jteam.nl/2009/08/04/introduction-to-hadoop/
+        </div>
+      </article>
+      
+      <article>
+        <h1>WordCount is trivial</h1>
+        <p>Instead, we're going to calculate:</p>
+        <ul class="build">
+          <li>point-wise mutual information (PMI)</li>
+          <li>in a single pass</li>
+          <li>using numpy and scipy.sparse</li>
+          <li>and a few MapReduce tricks</li>
+        </ul>
+        
+      </article>
+      
+      <article>
+        <h3>Some mathematics</h3>
+        <p>&nbsp;</p>
+        <p>Point-wise Mutual Information</p>
+        <br>
+        <p>\[ PMI(X,Y) = \log_2\frac{P(X, Y)}{P(X)P(Y)}  \]</p>
+        <p>&nbsp;</p>
+        <p>\( P(X, Y) \) for words is estimated from cooccurrences within a window of 10 words of one another</p>
+      </article>
+      
+      <!--
+      <article>
+        <h3>In a simpler world</h3>
+        <table>
+          <tr>
+            <th></th>
+            <th class="green">new</th>
+            <th class="green">cat</th>
+            <th class="green">blues</th>
+          </tr>
+          <tr>
+            <td class="blue"><strong>kitty</strong></td>
+            <td>1</td>
+            <td>4</td>
+            <td>0</td>
+          </tr>
+          <tr>
+            <td class="blue"><strong>york</strong></td>
+            <td>9</td>
+            <td>0</td>
+            <td>0</td>
+          </tr>
+          <tr>
+            <td class="blue"><strong>guitar</strong></td>
+            <td>4</td>
+            <td>0</td>
+            <td>3</td>
+          </tr>
+        </table>
+        <p>\[ PMI(york,new) = \log_2\frac{\frac{9}{21}}{\frac{9}{21} \frac{14}{21}} \]</p>
+        <p>\[ \approx 0.58 \]</p>
+      </article>
+      -->
+      
+      <article>
+        <h1>
+          #DiscoFTW
+        </h1>
+      </article>
+      
+      <article>
+        <h2>imports</h2>
+      </article>
+      
+      <article>
+        <h3>PMI imports/setup</h3>
+        <section>
+          <pre>
+import numpy as np
+import re
+from collections import Counter, deque
+from disco.util import kvgroup
+from disco.job import Job
+from itertools import chain, izip, islice
+from scipy.sparse.coo import coo_matrix
+
+def cooccurrences(doc, context=10):
+    tail = deque()
+    for i, word in enumerate(doc):
+        for other in tail:
+            if word != other:
+                yield word, other
+        tail.append(word)
+        if len(tail) > context:
+            _ = tail.popleft()
+          </pre>
+        </section>
+      </article>
+      
+      <article>
+        <h2>the mapper<h2>
+      </article>
+      
+      <article>
+        <h3>PMI mapper</h3>
+        <section>
+          <pre>
+WORD_PREFIX = '\x01'
+COO_PREFIX = '\x02'
+
+class MutualInformation(Job):
+  @staticmethod
+  def map(doc, params):
+    tokens = filter(lambda token: len(set(token) &
+            set(['\xff', '\x00'])) == 0, [t.encode('utf-8')
+            for t in re.findall('[\w]+', doc)])
+    for (word1, word2) in set(cooccurrences(tokens)):
+      yield WORD_PREFIX +  word1, 1
+      yield WORD_PREFIX + word2, 1
+      yield COO_PREFIX + ','.join([word1,word2]), 1
+      yield COO_PREFIX + ','.join([word2,word1]), 1 # reverse context
+          </pre>
+        </section>
+      </article>
+
+      <article>
+        <h2>combiner and partitioner</h2>
+      </article>
+      
+      <article>
+        <h3>PMI combiner/partitioner*</h3>
+        <section>
+          <pre>
+  @staticmethod
+  def combiner(key, value, buffer, done, params):
+    if not done:
+      buffer[key] = buffer.get(key, 0) + value
+    else:
+      for k, v in buffer.iteritems():
+          yield k, v
+      buffer.clear()
+  
+  sort = True
+  
+  @staticmethod
+  def partition(key, nr_partitions, params):
+    prefix, word = key[0], key[1:]
+    if prefix == WORD_PREFIX:
+      return range(nr_partitions)
+    else:
+      return hash(word.split(',')[0]) % nr_partitions</pre>
+        </section>
+        <p>* Note: multiple partitions only available in my fork currently</p>
+      </article>
+      
+      <article>
+        <h2>reducer</h2>
+      </article>
+      
+      <article class="smaller">
+        <h3>PMI reducer (part 1)</h3>
+        <section>
+          <pre>
+  @staticmethod
+  def reduce(iter, params):
+    kvs = kvgroup(iter)
+    word_ids = {}; MIN_COUNT = 100
+    current_kv = [None, None]
+    def gen_marginals(iterable, current_kv):
+      for key, values in iterable:
+        prefix, word = key[0], key[1:]
+        if prefix != WORD_PREFIX:
+          current_kv[:] = key, values
+          return
+        count = sum(values)
+        if count >= MIN_COUNT:
+          word_ids[word] = len(word_ids)
+          yield count
+    marginals = np.fromiter(gen_marginals(kvs, current_kv),
+                                dtype=np.uint32)
+    chain_iter = kvgroup(((key[1:].split(',')[0],
+                        (key[1:].split(',')[1], value))
+        for key, value in chain(*([current_kv], kvs))))        
+    V = len(marginals); N = marginals.sum()
+          </pre>
+        </section>
+      </article>
+      
+      <article class="smaller">
+        <h3>PMI reducer (part 2)</h3>
+        <section>
+          <pre>
+    id_word = dict((v,k) for k, v in word_ids.iteritems())
+    while True:
+      batch = islice(chain_iter, 256); has_next = batch.next()
+      if not has_next:
+        break
+      coo = np.fromiter((
+      (word_ids[key], word_ids[col_key], float(sum(col_values)) )
+            for key, values in chain(*([has_next], batch))
+            for col_key, col_values in values
+            if key in word_ids and col_key in word_ids),
+        dtype= [('row', np.int),('col', np.int),('data', np.float64)])
+      if not coo.any():
+        continue      
+      pmi = np.log2((coo['data'] * N)/
+        (marginals[coo['row']]*marginals[coo['col']]))
+      pmi = coo_matrix((pmi,(coo['row'], coo['col'])),
+        shape=(V,V))
+
+      offset=0
+      for row, data_iter in kvgroup(izip(pmi.row, pmi.data)):
+        data = np.fromiter(data_iter, dtype=pmi.data.dtype)
+        # keep top 10
+        top = data.argsort()[:-11:-1] + offset  
+        for col, mi in izip(pmi.col[top], pmi.data[top]):
+          yield (id_word[row],id_word[col]), mi
+        offset += len(data)</pre>
+        </section>
+      </article>
+      
+      <article>
+        <h3>
+          Some results on Twitter (my random selection):
+        </h3>
+        <ul>
+          <li>
+            ('duane', 'reade')
+          </li>
+          <li>
+            ('hiker', 'rescuer')
+          </li>
+          <li>
+            ('discarded', 'fishnets')
+          </li>
+          <li>
+            ('design-savvy', 'code-literate')
+          </li>
+          <li>
+            ('soulchild', 'musiq')
+          </li>
+          <li>
+            ('#mormon', '#lds')
+          </li>
+          <li>
+            ('paves', 'open-source')
+          </li>
+          <li>
+            ('mustaches', 'hairnet')
+          </li>
+        </ul>
+      </article>
+      
+      <article>
+        <h3>Other fun things you can do with numpy/scipy + MapReduce</h3>
+        <ul>
+          <li>numpy.tostring / numpy.fromstring for passing arrays around</li>
+          <li>matrix operations on batches in the combiner</li>
+          <li>numpy.save and push file to all nodes in DDFS</li>
+          <li>or use DiscoDB (disk-based dictionary) or Tokyo Cabinet or even HDF5</li>
+          <li>override map_reader, map_input_stream, map_output_stream to read and write binary data</li>
+        </ul>
+      </article>
+    
+      <article>
+        <h1>
+          Thank you!
+        </h1>
+        
+        <br><br>
+        <p>
+            @thatdatabaseguy
+            <br>
+            http://github.com/thatdatabaseguy
+            <br>
+            http://iam.al
+        </p>
+      </article>
+
+    </section>
+
+  </body>
+</html>
